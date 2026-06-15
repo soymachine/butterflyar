@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Mariposa AR</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: -apple-system, system-ui, sans-serif;
+      -webkit-user-select: none; user-select: none;
+      touch-action: none;
+    }
+    #stage { position: fixed; inset: 0; }
+
+    /* Camera feed (mirrored, cover) */
+    #camera {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+      background: #000;
+    }
+
+    /* Transparent WebGL canvas over the camera */
+    #scene {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+    }
+
+    /* Bottom gesture icons */
+    #controls {
+      position: fixed;
+      bottom: max(24px, env(safe-area-inset-bottom));
+      left: 0; right: 0;
+      display: flex;
+      justify-content: center;
+      gap: 28px;
+      z-index: 20;
+      pointer-events: none;
+    }
+    .icon {
+      width: 64px; height: 64px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.35);
+      border: 2px solid rgba(255,255,255,0.4);
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+      pointer-events: auto;
+    }
+    .icon svg { width: 34px; height: 34px; fill: rgba(255,255,255,0.85); }
+    .icon.active {
+      background: rgba(255,160,66,0.85);
+      border-color: #fff;
+      transform: scale(1.18);
+    }
+    .icon.active svg { fill: #fff; }
+
+    /* Overlays */
+    #overlay {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+      color: #fff;
+      background: radial-gradient(circle at center, #1a1a2e, #000);
+      z-index: 50;
+      padding: 32px;
+    }
+    #overlay h1 { font-size: 1.6rem; margin-bottom: 12px; }
+    #overlay p { font-size: 0.95rem; opacity: 0.8; max-width: 320px; line-height: 1.5; margin-bottom: 28px; }
+    #startBtn {
+      padding: 14px 34px;
+      font-size: 1rem;
+      border: none; border-radius: 30px;
+      background: linear-gradient(135deg, #ff8c42, #ff5e62);
+      color: #fff; font-weight: 600;
+      cursor: pointer;
+    }
+    #startBtn:active { transform: scale(0.97); }
+    .hidden { display: none !important; }
+    #status {
+      position: fixed; top: max(14px, env(safe-area-inset-top)); left: 0; right: 0;
+      text-align: center; color: rgba(255,255,255,0.75);
+      font-size: 0.8rem; z-index: 20; pointer-events: none;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="stage">
+    <video id="camera" playsinline autoplay muted></video>
+    <canvas id="scene"></canvas>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="controls">
+    <div class="icon" id="iconPalm" title="Mano abierta">
+      <!-- open palm -->
+      <svg viewBox="0 0 24 24"><path d="M7 22a3 3 0 0 1-3-3v-5.5a1.5 1.5 0 0 1 3 0V11V4.5a1.5 1.5 0 0 1 3 0V10V3a1.5 1.5 0 0 1 3 0v7V4a1.5 1.5 0 0 1 3 0v9.5l1.2-2a1.5 1.5 0 0 1 2.6 1.5L19 19a5 5 0 0 1-4.3 3H7z"/></svg>
+    </div>
+    <div class="icon" id="iconPoint" title="Dedo apuntando">
+      <!-- pointing finger -->
+      <svg viewBox="0 0 24 24"><path d="M2 11.5a1.5 1.5 0 0 1 1.5-1.5H13l-2.3-2.3a1.5 1.5 0 1 1 2.1-2.1l4.9 4.85a1.5 1.5 0 0 1 0 2.1l-4.9 4.85a1.5 1.5 0 0 1-2.1-2.1L13 13H3.5A1.5 1.5 0 0 1 2 11.5z"/></svg>
+    </div>
+  </div>
+
+  <div id="overlay">
+    <h1>🦋 Mariposa AR</h1>
+    <p>Apunta la cámara y mueve tu mano. Abre la palma para posar una mariposa de cristal, o apunta con el dedo para que se pose en la punta.</p>
+    <button id="startBtn">Iniciar cámara</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
