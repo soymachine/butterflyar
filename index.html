@@ -82,6 +82,7 @@
       cursor: pointer;
     }
     #startBtn:active { transform: scale(0.97); }
+    #version { margin-top: 16px; font-size: 0.8rem; opacity: 0.5; letter-spacing: 0.05em; }
     .hidden { display: none !important; }
     #status {
       position: fixed; top: max(14px, env(safe-area-inset-top)); left: 0; right: 0;
@@ -122,6 +123,7 @@
     <h1>🦋 Mariposa AR</h1>
     <p>Apunta la cámara y mueve tu mano. Abre la palma para posar una mariposa de cristal, o apunta con el dedo para que se pose en la punta.</p>
     <button id="startBtn">Iniciar cámara</button>
+    <div id="version">v0.5.0</div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>

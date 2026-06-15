@@ -163,9 +163,10 @@ const STATE = {
   AT_POINT: 'atPoint',    // resting on fingertip (follows finger)
 };
 
-// Base render scales. The glass butterfly is rendered 150% of the normal one.
+// Base render scales. The glass butterfly is rendered clearly larger (~170%)
+// than the normal one so the transformation is obvious.
 const NORMAL_SCALE = 0.5;
-const GLASS_SCALE  = NORMAL_SCALE * 1.5;
+const GLASS_SCALE  = NORMAL_SCALE * 1.7;
 // Morph durations (seconds).
 const MORPH_OUT_DUR = 0.28;
 const MORPH_IN_DUR  = 0.40;
@@ -179,9 +180,10 @@ const motion = {
   flap: 0,
   spin: 0,
   heading: 0,
-  morphT: 0,        // 0..1 progress within a morph phase
-  normalScale: 1,   // multiplier applied to NORMAL_SCALE
-  glassScale: 0,    // multiplier applied to GLASS_SCALE
+  morphT: 0,         // 0..1 progress within a morph phase
+  normalScale: 1,    // multiplier applied to NORMAL_SCALE
+  glassScale: 0,     // multiplier applied to GLASS_SCALE
+  flapIntensity: 1,  // 0 = wings at rest, 1 = full flap
 };
 
 function smoothstep(t) {
@@ -192,8 +194,25 @@ function smoothstep(t) {
 // ---------------------------------------------------------------------------
 // Particle burst (small "poof" when a butterfly appears / disappears)
 // ---------------------------------------------------------------------------
-const PARTICLE_COUNT = 70;
+const PARTICLE_COUNT = 80;
 let particles;
+
+// Soft round sprite so particles read as glowing dots (and write real alpha,
+// which matters when compositing the transparent canvas over the camera feed).
+function makeParticleTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0.0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.85)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 function initParticles() {
   const positions = new Float32Array(PARTICLE_COUNT * 3);
@@ -201,17 +220,20 @@ function initParticles() {
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   const mat = new THREE.PointsMaterial({
     color: 0xffe6a8,
-    size: 0.13,
+    map: makeParticleTexture(),
+    size: 0.28,
     transparent: true,
     opacity: 1,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    depthTest: false,
     sizeAttenuation: true,
   });
   const points = new THREE.Points(geo, mat);
+  points.renderOrder = 999;
   points.visible = false;
+  points.frustumCulled = false;
   scene.add(points);
-  particles = { geo, mat, points, vel: new Float32Array(PARTICLE_COUNT * 3), life: 0, maxLife: 0.6 };
+  particles = { geo, mat, points, vel: new Float32Array(PARTICLE_COUNT * 3), life: 0, maxLife: 0.7 };
 }
 
 function burst(pos, colorHex) {
@@ -444,11 +466,21 @@ function tick() {
     active.rightPivot.rotation.y = -0.35;
     active.leftPivot.rotation.y  =  0.35;
   } else {
-    // Flapping. Faster when travelling.
     const dist = motion.pos.distanceTo(motion.target);
+
+    // While resting on the fingertip, only flap if the finger moves a lot;
+    // otherwise the butterfly stays "perched" with wings nearly still.
+    let wantFlap = 1;
+    if (motion.state === STATE.AT_POINT) {
+      wantFlap = dist > 0.22 ? 1 : 0;
+    }
+    motion.flapIntensity = THREE.MathUtils.lerp(motion.flapIntensity, wantFlap, 0.12);
+
     const flapSpeed = 12 + Math.min(dist, 3) * 4;
     motion.flap += dt * flapSpeed;
-    const flap = Math.sin(motion.flap) * 0.9 + 0.2;
+    const REST_POSE = 0.12; // wings slightly open when perched
+    const flapping = Math.sin(motion.flap) * 0.9 + 0.2;
+    const flap = flapping * motion.flapIntensity + REST_POSE * (1 - motion.flapIntensity);
     active.rightPivot.rotation.y = -flap;
     active.leftPivot.rotation.y  =  flap;
     // Banking / facing.
