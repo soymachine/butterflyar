@@ -79,7 +79,7 @@ function initThree() {
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
   normalButterfly = buildButterfly(false);
-  glassButterfly  = buildButterfly(true);
+  glassButterfly  = buildCrystal();
   glassButterfly.group.visible = false;
   scene.add(normalButterfly.group);
   scene.add(glassButterfly.group);
@@ -116,6 +116,17 @@ let modelTemplate = null;   // parsed OBJ (THREE.Group) reused to build instance
 let modelCenter = new THREE.Vector3();
 let modelFit = 1;           // scale that normalises wingspan to ~2 world units
 
+// Crystal object shown when the butterfly perches on the open palm.
+// It's a perfume bottle (LA BOMBA): glass body, gold parts, marble cap.
+const CRYSTAL_URL = './crystal/crystal.obj';
+const CRYSTAL_TEX = './crystal/crystal_texture.jpg';
+const CRYSTAL_GLASS = ['BODY_A', 'INNER_BODY'];
+const CRYSTAL_MARBLE = ['TAPA'];
+let crystalTemplate = null;
+let crystalCenter = new THREE.Vector3();
+let crystalFit = 1;
+let texCrystal;
+
 function loadTexture(loader, url, srgb) {
   return new Promise((res) => {
     loader.load(url, (t) => {
@@ -145,6 +156,23 @@ async function loadButterflyAssets() {
   const size = new THREE.Vector3();
   box.getSize(size);
   modelFit = 2.0 / Math.max(size.x, 1e-4); // normalise so NORMAL_SCALE*fit gives a nice size
+}
+
+async function loadCrystalAssets() {
+  const texLoader = new THREE.TextureLoader();
+  const objLoader = new OBJLoader();
+  const [obj, tex] = await Promise.all([
+    new Promise((res, rej) => objLoader.load(CRYSTAL_URL, res, undefined, rej)),
+    loadTexture(texLoader, CRYSTAL_TEX, true),
+  ]);
+  crystalTemplate = obj;
+  texCrystal = tex;
+
+  const box = new THREE.Box3().setFromObject(obj);
+  box.getCenter(crystalCenter);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  crystalFit = 2.4 / Math.max(size.x, size.y, size.z, 1e-4); // normalise overall size
 }
 
 function glassMaterial(isWing) {
@@ -224,6 +252,66 @@ function buildButterfly(isGlass) {
   }
 
   return { group: outer, rightPivot, leftPivot, bodyGroup, isGlass };
+}
+
+// Faithful materials for the perfume bottle, per the original .mtl.
+function crystalMaterialFor(name) {
+  if (CRYSTAL_GLASS.includes(name)) {
+    return new THREE.MeshPhysicalMaterial({
+      color: 0xf3b8cf,            // rosy tint (Tf in the .mtl)
+      metalness: 0,
+      roughness: 0.08,
+      transmission: 1.0,
+      thickness: 2.0,
+      ior: 1.517,
+      transparent: true,
+      side: THREE.DoubleSide,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.05,
+      attenuationColor: 0xff5e9a,
+      attenuationDistance: 5.0,
+      envMapIntensity: 1.4,
+    });
+  }
+  if (CRYSTAL_MARBLE.includes(name)) {
+    return new THREE.MeshStandardMaterial({
+      map: texCrystal || null,
+      roughness: 0.5,
+      metalness: 0.0,
+    });
+  }
+  // GOLD (default for GOLD, INNER_CAP, SPRAY*)
+  return new THREE.MeshStandardMaterial({
+    color: 0xffc27a,
+    metalness: 1.0,
+    roughness: 0.25,
+    envMapIntensity: 1.2,
+  });
+}
+
+// Build the crystal perfume bottle. It is already upright (Y-up), so no
+// re-orientation is needed; it spins on its Y axis in the GLASS state.
+function buildCrystal() {
+  const outer   = new THREE.Group();
+  const scaled  = new THREE.Group();
+  const centred = new THREE.Group();
+  scaled.scale.setScalar(crystalFit);
+  centred.position.set(-crystalCenter.x, -crystalCenter.y, -crystalCenter.z);
+  outer.add(scaled);
+  scaled.add(centred);
+
+  const meshes = [];
+  crystalTemplate.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  for (const src of meshes) {
+    const mesh = new THREE.Mesh(src.geometry, crystalMaterialFor(src.name));
+    mesh.name = src.name;
+    centred.add(mesh);
+  }
+
+  // Dummy pivots so the shared animation code can touch them harmlessly.
+  const rightPivot = new THREE.Group();
+  const leftPivot  = new THREE.Group();
+  return { group: outer, rightPivot, leftPivot, isGlass: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -696,7 +784,7 @@ startBtn.addEventListener('click', async () => {
 
   startBtn.textContent = 'Cargando modelo…';
   try {
-    await loadButterflyAssets();
+    await Promise.all([loadButterflyAssets(), loadCrystalAssets()]);
   } catch (e) {
     console.error(e);
     setStatus('No se pudo cargar el modelo 3D: ' + e.message);
