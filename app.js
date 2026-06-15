@@ -64,6 +64,8 @@ function initThree() {
   scene.add(normalButterfly.group);
   scene.add(glassButterfly.group);
 
+  initParticles();
+
   resize();
   window.addEventListener('resize', resize);
 }
@@ -152,12 +154,21 @@ function createButterfly(isGlass) {
 // Behaviour / motion
 // ---------------------------------------------------------------------------
 const STATE = {
-  WANDER: 'wander',     // normal butterfly flying randomly
-  TO_PALM: 'toPalm',    // flying toward palm centre
-  GLASS: 'glass',       // glass butterfly resting & spinning on palm
-  TO_POINT: 'toPoint',  // flying toward fingertip
-  AT_POINT: 'atPoint',  // resting on fingertip (follows finger)
+  WANDER: 'wander',       // normal butterfly flying randomly
+  TO_PALM: 'toPalm',      // flying toward palm centre
+  MORPH_OUT: 'morphOut',  // normal butterfly shrinking 100% -> 0%
+  MORPH_IN: 'morphIn',    // glass butterfly growing 0% -> 150%
+  GLASS: 'glass',         // glass butterfly resting & spinning on palm
+  TO_POINT: 'toPoint',    // flying toward fingertip
+  AT_POINT: 'atPoint',    // resting on fingertip (follows finger)
 };
+
+// Base render scales. The glass butterfly is rendered 150% of the normal one.
+const NORMAL_SCALE = 0.5;
+const GLASS_SCALE  = NORMAL_SCALE * 1.5;
+// Morph durations (seconds).
+const MORPH_OUT_DUR = 0.28;
+const MORPH_IN_DUR  = 0.40;
 
 const motion = {
   state: STATE.WANDER,
@@ -168,7 +179,74 @@ const motion = {
   flap: 0,
   spin: 0,
   heading: 0,
+  morphT: 0,        // 0..1 progress within a morph phase
+  normalScale: 1,   // multiplier applied to NORMAL_SCALE
+  glassScale: 0,    // multiplier applied to GLASS_SCALE
 };
+
+function smoothstep(t) {
+  t = Math.min(1, Math.max(0, t));
+  return t * t * (3 - 2 * t);
+}
+
+// ---------------------------------------------------------------------------
+// Particle burst (small "poof" when a butterfly appears / disappears)
+// ---------------------------------------------------------------------------
+const PARTICLE_COUNT = 70;
+let particles;
+
+function initParticles() {
+  const positions = new Float32Array(PARTICLE_COUNT * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({
+    color: 0xffe6a8,
+    size: 0.13,
+    transparent: true,
+    opacity: 1,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geo, mat);
+  points.visible = false;
+  scene.add(points);
+  particles = { geo, mat, points, vel: new Float32Array(PARTICLE_COUNT * 3), life: 0, maxLife: 0.6 };
+}
+
+function burst(pos, colorHex) {
+  const p = particles;
+  p.mat.color.setHex(colorHex);
+  const arr = p.geo.attributes.position.array;
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    arr[i * 3] = pos.x; arr[i * 3 + 1] = pos.y; arr[i * 3 + 2] = pos.z;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const sp = 1.0 + Math.random() * 1.8;
+    p.vel[i * 3]     = Math.sin(phi) * Math.cos(theta) * sp;
+    p.vel[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * sp;
+    p.vel[i * 3 + 2] = Math.cos(phi) * sp;
+  }
+  p.geo.attributes.position.needsUpdate = true;
+  p.life = p.maxLife;
+  p.points.visible = true;
+}
+
+function updateParticles(dt) {
+  const p = particles;
+  if (!p || p.life <= 0) return;
+  p.life -= dt;
+  const arr = p.geo.attributes.position.array;
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    arr[i * 3]     += p.vel[i * 3] * dt;
+    arr[i * 3 + 1] += p.vel[i * 3 + 1] * dt;
+    arr[i * 3 + 2] += p.vel[i * 3 + 2] * dt;
+    p.vel[i * 3] *= 0.9; p.vel[i * 3 + 1] *= 0.9; p.vel[i * 3 + 2] *= 0.9;
+  }
+  p.geo.attributes.position.needsUpdate = true;
+  p.mat.opacity = Math.max(0, p.life / p.maxLife);
+  if (p.life <= 0) p.points.visible = false;
+}
 
 // Convert a screen pixel (x,y) to a world position on the focal plane.
 const _ndc = new THREE.Vector3();
@@ -204,27 +282,43 @@ function pickWanderTarget() {
 // ---------------------------------------------------------------------------
 // State machine driven by detected gesture
 // ---------------------------------------------------------------------------
+const PALM_STATES  = [STATE.TO_PALM, STATE.MORPH_OUT, STATE.MORPH_IN, STATE.GLASS];
+const POINT_STATES = [STATE.TO_POINT, STATE.AT_POINT];
+
 function updateGestureLogic() {
   const g = hand.gesture;
-  iconPalm.classList.toggle('active', g === GESTURE.PALM);
-  iconPoint.classList.toggle('active', g === GESTURE.POINT);
-
   const handFresh = (performance.now() - hand.lastSeen) < 700;
+  const palmActive  = g === GESTURE.PALM  && handFresh && hand.palm.visible;
+  const pointActive = g === GESTURE.POINT && handFresh && hand.point.visible;
 
-  if (g === GESTURE.PALM && handFresh && hand.palm.visible) {
-    if (motion.state === STATE.WANDER || motion.state === STATE.TO_POINT || motion.state === STATE.AT_POINT) {
+  iconPalm.classList.toggle('active', palmActive);
+  iconPoint.classList.toggle('active', pointActive);
+
+  const inPalm  = PALM_STATES.includes(motion.state);
+  const inPoint = POINT_STATES.includes(motion.state);
+
+  // When leaving a palm state where the glass butterfly is visible, poof it and
+  // restore the normal butterfly instantly at 100% right where it was.
+  const dismissGlass = () => {
+    if (motion.state === STATE.MORPH_IN || motion.state === STATE.GLASS) {
+      burst(motion.pos, 0xbfe8ff);
+    }
+    motion.normalScale = 1;
+    motion.glassScale = 0;
+  };
+
+  if (palmActive) {
+    if (motion.state === STATE.WANDER || inPoint) {
       motion.state = STATE.TO_PALM;
+      motion.morphT = 0;
     }
-  } else if (g === GESTURE.POINT && handFresh && hand.point.visible) {
-    if (motion.state === STATE.WANDER || motion.state === STATE.TO_PALM || motion.state === STATE.GLASS) {
-      motion.state = STATE.TO_POINT;
-    }
+  } else if (pointActive) {
+    if (inPalm) { dismissGlass(); motion.state = STATE.TO_POINT; }
+    else if (motion.state === STATE.WANDER) { motion.state = STATE.TO_POINT; }
   } else {
-    // No (valid) gesture → return to free flight.
-    if (motion.state !== STATE.WANDER) {
-      motion.state = STATE.WANDER;
-      pickWanderTarget();
-    }
+    // No valid gesture → return to free flight.
+    if (inPalm) { dismissGlass(); motion.state = STATE.WANDER; pickWanderTarget(); }
+    else if (inPoint) { motion.state = STATE.WANDER; pickWanderTarget(); }
   }
 }
 
@@ -243,7 +337,6 @@ function tick() {
   updateGestureLogic();
 
   let showGlass = false;
-  let arrived = false;
   const ARRIVE = 0.18; // world units considered "arrived"
 
   switch (motion.state) {
@@ -254,12 +347,45 @@ function tick() {
       motion.target.copy(motion.wanderTarget);
       motion.target.y += Math.sin(now * 0.003) * 0.25;
       motion.target.x += Math.cos(now * 0.0021) * 0.2;
+      motion.normalScale = 1;
+      motion.glassScale = 0;
       break;
     }
     case STATE.TO_PALM: {
+      // Fly to the centre of the palm; once there, begin the morph.
       screenToWorld(hand.palm.x, hand.palm.y, _palmWorld);
       motion.target.copy(_palmWorld);
+      motion.normalScale = 1;
       if (motion.pos.distanceTo(motion.target) < ARRIVE) {
+        motion.state = STATE.MORPH_OUT;
+        motion.morphT = 0;
+      }
+      break;
+    }
+    case STATE.MORPH_OUT: {
+      // Normal butterfly shrinks 100% -> 0% at the palm centre.
+      screenToWorld(hand.palm.x, hand.palm.y, _palmWorld);
+      motion.target.copy(_palmWorld);
+      motion.morphT += dt / MORPH_OUT_DUR;
+      motion.normalScale = 1 - smoothstep(motion.morphT);
+      if (motion.morphT >= 1) {
+        burst(motion.pos, 0xff8c42); // poof where it vanished
+        motion.state = STATE.MORPH_IN;
+        motion.morphT = 0;
+        motion.normalScale = 0;
+        motion.glassScale = 0;
+      }
+      break;
+    }
+    case STATE.MORPH_IN: {
+      // Glass butterfly grows 0% -> 150% at the palm centre.
+      screenToWorld(hand.palm.x, hand.palm.y, _palmWorld);
+      motion.target.copy(_palmWorld);
+      motion.morphT += dt / MORPH_IN_DUR;
+      motion.glassScale = smoothstep(motion.morphT);
+      showGlass = true;
+      if (motion.morphT >= 1) {
+        motion.glassScale = 1;
         motion.state = STATE.GLASS;
       }
       break;
@@ -267,7 +393,7 @@ function tick() {
     case STATE.GLASS: {
       screenToWorld(hand.palm.x, hand.palm.y, _palmWorld);
       motion.target.copy(_palmWorld);
-      motion.pos.lerp(motion.target, 1 - Math.pow(0.001, dt)); // tight follow
+      motion.glassScale = 1;
       showGlass = true;
       break;
     }
@@ -286,11 +412,13 @@ function tick() {
     }
   }
 
-  // Move toward target (glass already lerped above).
-  if (motion.state !== STATE.GLASS) {
+  // Move toward target. Palm-anchored states track the hand tightly.
+  const tight = (motion.state === STATE.GLASS || motion.state === STATE.MORPH_IN || motion.state === STATE.MORPH_OUT);
+  if (tight) {
+    motion.pos.lerp(motion.target, 1 - Math.pow(0.001, dt));
+  } else {
     const speed = (motion.state === STATE.WANDER) ? 2.5 : 5.0;
-    const ease = 1 - Math.exp(-speed * dt);
-    motion.pos.lerp(motion.target, ease);
+    motion.pos.lerp(motion.target, 1 - Math.exp(-speed * dt));
   }
 
   // Orient toward direction of travel.
@@ -301,8 +429,11 @@ function tick() {
 
   // ---- Drive the visible butterfly ----
   const active = showGlass ? glassButterfly : normalButterfly;
-  normalButterfly.group.visible = !showGlass;
-  glassButterfly.group.visible  = showGlass;
+  normalButterfly.group.visible = !showGlass && motion.normalScale > 0.001;
+  glassButterfly.group.visible  = showGlass && motion.glassScale > 0.001;
+
+  normalButterfly.group.scale.setScalar(NORMAL_SCALE * motion.normalScale);
+  glassButterfly.group.scale.setScalar(GLASS_SCALE * motion.glassScale);
 
   active.group.position.copy(motion.pos);
 
@@ -323,6 +454,8 @@ function tick() {
     // Banking / facing.
     active.group.rotation.set(-0.35, 0, motion.heading);
   }
+
+  updateParticles(dt);
 
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
