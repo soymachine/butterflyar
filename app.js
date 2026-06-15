@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -77,8 +78,8 @@ function initThree() {
   scene.add(dir);
   scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
-  normalButterfly = createButterfly(false);
-  glassButterfly  = createButterfly(true);
+  normalButterfly = buildButterfly(false);
+  glassButterfly  = buildButterfly(true);
   glassButterfly.group.visible = false;
   scene.add(normalButterfly.group);
   scene.add(glassButterfly.group);
@@ -97,76 +98,132 @@ function resize() {
 }
 
 // ---------------------------------------------------------------------------
-// Butterfly geometry (procedural)
+// Butterfly model (loaded from butterfly/Butterfly_Model.obj)
 // ---------------------------------------------------------------------------
-function wingShape() {
-  // A single butterfly wing made of an upper + lower lobe.
-  const s = new THREE.Shape();
-  s.moveTo(0, 0);
-  s.bezierCurveTo(0.2, 0.9, 1.0, 1.1, 1.15, 0.35);
-  s.bezierCurveTo(1.25, -0.05, 0.95, -0.15, 0.75, -0.1);
-  s.bezierCurveTo(1.05, -0.35, 0.95, -0.95, 0.55, -1.0);
-  s.bezierCurveTo(0.25, -1.0, 0.05, -0.55, 0, 0);
-  return s;
+// The OBJ has no materials, so we assign textures by hand. Measuring the 14
+// groups, the big surfaces (polySurface 1, 6, 8, 13) are the four wing panels;
+// everything else (centred on x≈0) is the body / antennae / legs.
+const WING_RE = /polySurface(1|6|8|13)(?![0-9])/;
+
+const MODEL_URL = './butterfly/Butterfly_Model.obj';
+const TEX = {
+  wingColor: './butterfly/Monarch_Wings_Color.jpg',
+  wingAlpha: './butterfly/Monarch_Wings_Alpha.png',
+  bodyColor: './butterfly/Body_Color.jpg',
+};
+
+let modelTemplate = null;   // parsed OBJ (THREE.Group) reused to build instances
+let modelCenter = new THREE.Vector3();
+let modelFit = 1;           // scale that normalises wingspan to ~2 world units
+
+function loadTexture(loader, url, srgb) {
+  return new Promise((res) => {
+    loader.load(url, (t) => {
+      if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = 4;
+      res(t);
+    }, undefined, () => res(null));
+  });
 }
 
-function createButterfly(isGlass) {
-  const group = new THREE.Group();
+let texWingColor, texWingAlpha, texBodyColor;
 
-  const geom = new THREE.ShapeGeometry(wingShape(), 24);
+async function loadButterflyAssets() {
+  const texLoader = new THREE.TextureLoader();
+  const objLoader = new OBJLoader();
+  const [obj, wc, wa, bc] = await Promise.all([
+    new Promise((res, rej) => objLoader.load(MODEL_URL, res, undefined, rej)),
+    loadTexture(texLoader, TEX.wingColor, true),
+    loadTexture(texLoader, TEX.wingAlpha, false),
+    loadTexture(texLoader, TEX.bodyColor, true),
+  ]);
+  modelTemplate = obj;
+  texWingColor = wc; texWingAlpha = wa; texBodyColor = bc;
 
-  let wingMat;
-  if (isGlass) {
-    wingMat = new THREE.MeshPhysicalMaterial({
-      color: 0xbfe8ff,
-      metalness: 0,
-      roughness: 0.02,
-      transmission: 1.0,
-      thickness: 0.6,
-      ior: 1.5,
-      transparent: true,
+  const box = new THREE.Box3().setFromObject(obj);
+  box.getCenter(modelCenter);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  modelFit = 2.0 / Math.max(size.x, 1e-4); // normalise so NORMAL_SCALE*fit gives a nice size
+}
+
+function glassMaterial(isWing) {
+  const m = new THREE.MeshPhysicalMaterial({
+    color: 0xbfe8ff,
+    metalness: 0,
+    roughness: 0.05,
+    transmission: 1.0,
+    thickness: 0.5,
+    ior: 1.5,
+    transparent: true,
+    side: THREE.DoubleSide,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.05,
+    envMapIntensity: 1.4,
+  });
+  if (isWing && texWingAlpha) { m.alphaMap = texWingAlpha; m.alphaTest = 0.4; }
+  return m;
+}
+
+function texturedMaterial(isWing) {
+  if (isWing) {
+    return new THREE.MeshStandardMaterial({
+      map: texWingColor || null,
+      alphaMap: texWingAlpha || null,
+      transparent: !!texWingAlpha,
+      alphaTest: texWingAlpha ? 0.4 : 0,
       side: THREE.DoubleSide,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
-      envMapIntensity: 1.4,
-    });
-  } else {
-    wingMat = new THREE.MeshStandardMaterial({
-      color: 0xff8c42,
-      emissive: 0x551100,
-      emissiveIntensity: 0.25,
-      roughness: 0.55,
-      metalness: 0.1,
-      side: THREE.DoubleSide,
+      roughness: 0.6,
+      metalness: 0.0,
     });
   }
+  return new THREE.MeshStandardMaterial({
+    map: texBodyColor || null,
+    side: THREE.DoubleSide,
+    roughness: 0.7,
+    metalness: 0.0,
+  });
+}
 
-  // Left & right wing pivots so they can flap around the body axis (Y).
-  const rightPivot = new THREE.Group();
+// Build one butterfly instance (textured or glass) from the loaded template.
+// Hierarchy: group(outer, animated) → oriented(stand upright, face camera)
+//            → scaled(fit) → centred(origin at centroid) → {leftPivot,rightPivot,body}
+function buildButterfly(isGlass) {
+  const outer    = new THREE.Group();
+  const oriented = new THREE.Group();
+  const scaled   = new THREE.Group();
+  const centred  = new THREE.Group();
   const leftPivot  = new THREE.Group();
+  const rightPivot = new THREE.Group();
+  const bodyGroup  = new THREE.Group();
 
-  const rightWing = new THREE.Mesh(geom, wingMat);
-  const leftWing  = new THREE.Mesh(geom, wingMat);
-  leftWing.scale.x = -1; // mirror
+  oriented.rotation.x = -Math.PI / 2; // model lies flat (top view) → stand it up
+  scaled.scale.setScalar(modelFit);
+  centred.position.set(-modelCenter.x, -modelCenter.y, -modelCenter.z);
 
-  rightPivot.add(rightWing);
-  leftPivot.add(leftWing);
+  outer.add(oriented);
+  oriented.add(scaled);
+  scaled.add(centred);
+  centred.add(leftPivot, rightPivot, bodyGroup);
 
-  // Body.
-  const bodyMat = isGlass
-    ? wingMat
-    : new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.6 });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.9, 6, 12), bodyMat);
-  body.rotation.x = Math.PI / 2; // lie along Z so wings spread sideways
-  group.add(body);
+  const meshes = [];
+  modelTemplate.traverse((o) => { if (o.isMesh) meshes.push(o); });
 
-  group.add(rightPivot);
-  group.add(leftPivot);
+  for (const src of meshes) {
+    const isWing = WING_RE.test(src.name);
+    const mesh = new THREE.Mesh(src.geometry, isGlass ? glassMaterial(isWing) : texturedMaterial(isWing));
+    mesh.name = src.name;
+    if (isWing) {
+      src.geometry.computeBoundingBox();
+      const bb = src.geometry.boundingBox;
+      const cx = (bb.min.x + bb.max.x) / 2;
+      (cx < 0 ? leftPivot : rightPivot).add(mesh);
+    } else {
+      bodyGroup.add(mesh);
+    }
+  }
 
-  const scale = 0.5;
-  group.scale.setScalar(scale);
-
-  return { group, rightPivot, leftPivot, isGlass };
+  return { group: outer, rightPivot, leftPivot, bodyGroup, isGlass };
 }
 
 // ---------------------------------------------------------------------------
@@ -483,9 +540,9 @@ function tick() {
   if (showGlass) {
     // Static wings, automatic spin on its own vertical axis.
     motion.spin += dt * 1.4;
-    active.group.rotation.set(0.2, motion.spin, 0);
-    active.rightPivot.rotation.y = -0.35;
-    active.leftPivot.rotation.y  =  0.35;
+    active.group.rotation.set(0.12, motion.spin, 0);
+    active.rightPivot.rotation.z = 0;
+    active.leftPivot.rotation.z  = 0;
   } else {
     const dist = motion.pos.distanceTo(motion.target);
 
@@ -499,13 +556,13 @@ function tick() {
 
     const flapSpeed = 12 + Math.min(dist, 3) * 4;
     motion.flap += dt * flapSpeed;
-    const REST_POSE = 0.12; // wings slightly open when perched
-    const flapping = Math.sin(motion.flap) * 0.9 + 0.2;
+    const REST_POSE = 0.08; // wings slightly open when perched
+    const flapping = Math.sin(motion.flap) * 0.6 + 0.15; // radians, fold about body axis
     const flap = flapping * motion.flapIntensity + REST_POSE * (1 - motion.flapIntensity);
-    active.rightPivot.rotation.y = -flap;
-    active.leftPivot.rotation.y  =  flap;
-    // Banking / facing.
-    active.group.rotation.set(-0.35, 0, motion.heading);
+    active.leftPivot.rotation.z  =  flap;
+    active.rightPivot.rotation.z = -flap;
+    // Gentle banking toward travel direction (model already faces the camera).
+    active.group.rotation.set(0, 0, motion.heading * 0.3);
   }
 
   updateParticles(dt);
@@ -636,6 +693,16 @@ startBtn.addEventListener('click', async () => {
   startBtn.textContent = 'Cargando…';
   const ok = await startCamera();
   if (!ok) { startBtn.disabled = false; startBtn.textContent = 'Reintentar'; return; }
+
+  startBtn.textContent = 'Cargando modelo…';
+  try {
+    await loadButterflyAssets();
+  } catch (e) {
+    console.error(e);
+    setStatus('No se pudo cargar el modelo 3D: ' + e.message);
+    startBtn.disabled = false; startBtn.textContent = 'Reintentar';
+    return;
+  }
 
   overlay.classList.add('hidden');
   initThree();
