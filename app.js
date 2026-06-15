@@ -334,17 +334,16 @@ function tick() {
 let mpHands;
 let mpRunning = false;
 
-// Map a normalised MediaPipe landmark to mirrored screen pixels, matching the
-// CSS `object-fit: cover` + `scaleX(-1)` applied to the <video> element.
+// Map a normalised MediaPipe landmark to screen pixels, matching the
+// CSS `object-fit: cover` applied to the (non-mirrored, rear) <video> element.
 function coverMap(nx, ny) {
   const sw = window.innerWidth, sh = window.innerHeight;
   const vw = video.videoWidth || sw, vh = video.videoHeight || sh;
   const scale = Math.max(sw / vw, sh / vh);
   const dispW = vw * scale, dispH = vh * scale;
   const offX = (sw - dispW) / 2, offY = (sh - dispH) / 2;
-  let px = offX + nx * dispW;
+  const px = offX + nx * dispW;
   const py = offY + ny * dispH;
-  px = sw - px; // mirror (video is scaleX(-1))
   return { x: px, y: py };
 }
 
