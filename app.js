@@ -258,18 +258,18 @@ function buildButterfly(isGlass) {
 function crystalMaterialFor(name) {
   if (CRYSTAL_GLASS.includes(name)) {
     return new THREE.MeshPhysicalMaterial({
-      color: 0xf3b8cf,            // rosy tint (Tf in the .mtl)
+      color: 0xff1a1a,            // intense red
       metalness: 0,
-      roughness: 0.08,
+      roughness: 0.06,
       transmission: 1.0,
-      thickness: 2.0,
+      thickness: 2.5,
       ior: 1.517,
       transparent: true,
       side: THREE.DoubleSide,
       clearcoat: 1.0,
       clearcoatRoughness: 0.05,
-      attenuationColor: 0xff5e9a,
-      attenuationDistance: 5.0,
+      attenuationColor: 0xff0000,  // pure red absorption
+      attenuationDistance: 1.5,    // shorter = more saturated red through the glass
       envMapIntensity: 1.4,
     });
   }
