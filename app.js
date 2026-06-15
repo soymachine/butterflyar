@@ -19,12 +19,31 @@ function setStatus(msg) { statusEl.textContent = msg; }
 // ---------------------------------------------------------------------------
 const GESTURE = { NONE: 'none', PALM: 'palm', POINT: 'point' };
 const hand = {
-  gesture: GESTURE.NONE,
-  // Latest screen-pixel positions for palm centre and index fingertip.
-  palm:  { x: 0, y: 0, visible: false },
-  point: { x: 0, y: 0, visible: false },
+  gesture: GESTURE.NONE, // debounced/stable gesture used by the app
+  raw: GESTURE.NONE,     // per-frame raw classification
+  candidate: GESTURE.NONE,
+  candTime: 0,
+  // Latest screen-pixel positions for palm centre and index fingertip
+  // (latched: kept through brief detection dropouts).
+  palm:  { x: 0, y: 0 },
+  point: { x: 0, y: 0 },
   lastSeen: 0,
 };
+
+// Debounce raw detections so a few dropped frames don't reset everything.
+// Engaging a gesture is quick; releasing one needs to persist longer.
+function debounceGesture(dt) {
+  const seen = (performance.now() - hand.lastSeen) < 400;
+  const raw = seen ? hand.raw : GESTURE.NONE;
+  if (raw === hand.candidate) {
+    hand.candTime += dt;
+  } else {
+    hand.candidate = raw;
+    hand.candTime = 0;
+  }
+  const need = (hand.candidate === GESTURE.NONE) ? 0.45 : 0.12;
+  if (hand.candTime >= need) hand.gesture = hand.candidate;
+}
 
 // ---------------------------------------------------------------------------
 // Three.js scene
@@ -308,10 +327,8 @@ const PALM_STATES  = [STATE.TO_PALM, STATE.MORPH_OUT, STATE.MORPH_IN, STATE.GLAS
 const POINT_STATES = [STATE.TO_POINT, STATE.AT_POINT];
 
 function updateGestureLogic() {
-  const g = hand.gesture;
-  const handFresh = (performance.now() - hand.lastSeen) < 700;
-  const palmActive  = g === GESTURE.PALM  && handFresh && hand.palm.visible;
-  const pointActive = g === GESTURE.POINT && handFresh && hand.point.visible;
+  const palmActive  = hand.gesture === GESTURE.PALM;
+  const pointActive = hand.gesture === GESTURE.POINT;
 
   iconPalm.classList.toggle('active', palmActive);
   iconPoint.classList.toggle('active', pointActive);
@@ -356,7 +373,11 @@ function tick() {
   const dt = Math.min((now - lastT) / 1000, 0.05);
   lastT = now;
 
+  debounceGesture(dt);
   updateGestureLogic();
+
+  // Live debug feedback so detection state is visible on the device.
+  setStatus(`🖐️/👉  mano: ${(performance.now() - hand.lastSeen) < 400 ? 'sí' : 'no'} · gesto: ${hand.gesture} · ${motion.state}`);
 
   let showGlass = false;
   const ARRIVE = 0.18; // world units considered "arrived"
@@ -538,14 +559,12 @@ function classifyGesture(lm) {
 function onHandResults(results) {
   const lms = results.multiHandLandmarks;
   if (!lms || lms.length === 0) {
-    hand.gesture = GESTURE.NONE;
-    hand.palm.visible = false;
-    hand.point.visible = false;
+    hand.raw = GESTURE.NONE; // positions are latched (kept from last frame)
     return;
   }
   const lm = lms[0];
   hand.lastSeen = performance.now();
-  hand.gesture = classifyGesture(lm);
+  hand.raw = classifyGesture(lm);
 
   // Palm centre = average of wrist + finger MCP joints.
   const palmIds = [0, 5, 9, 13, 17];
@@ -553,11 +572,11 @@ function onHandResults(results) {
   for (const id of palmIds) { cx += lm[id].x; cy += lm[id].y; }
   cx /= palmIds.length; cy /= palmIds.length;
   const palmPx = coverMap(cx, cy);
-  hand.palm.x = palmPx.x; hand.palm.y = palmPx.y; hand.palm.visible = true;
+  hand.palm.x = palmPx.x; hand.palm.y = palmPx.y;
 
   // Index fingertip.
   const tipPx = coverMap(lm[8].x, lm[8].y);
-  hand.point.x = tipPx.x; hand.point.y = tipPx.y; hand.point.visible = true;
+  hand.point.x = tipPx.x; hand.point.y = tipPx.y;
 }
 
 async function initHands() {
