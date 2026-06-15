@@ -107,9 +107,9 @@ const WING_RE = /polySurface(1|6|8|13)(?![0-9])/;
 
 const MODEL_URL = './butterfly/Butterfly_Model.obj';
 const TEX = {
-  wingColor: './butterfly/Monarch_Wings_Color.png',
+  wingColor: './butterfly/Monarch_Wings_Color.jpg',
   wingAlpha: './butterfly/Monarch_Wings_Alpha.png',
-  bodyColor: './butterfly/Body_Color.png',
+  bodyColor: './butterfly/Body_Color.jpg',
 };
 
 let modelTemplate = null;   // parsed OBJ (THREE.Group) reused to build instances
